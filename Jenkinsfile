@@ -3,43 +3,53 @@ pipeline {
 
     stages {
 
-        stage('Check & Install Java, Maven, Tomcat (as ROOT)') {
+        stage('Check & Install Java') {
             steps {
                 sh '''
-                    sudo -s << 'EOF'
-
-                    echo "===== CHECKING JAVA ====="
+                    echo "=== Checking Java ==="
                     if java -version >/dev/null 2>&1; then
                         echo "Java already installed"
                         java -version
                     else
                         echo "Installing Java 17..."
-                        apt update -y
-                        apt install -y openjdk-17-jdk
+                        sudo apt update -y
+                        sudo apt install -y openjdk-17-jdk
+                        java -version
                     fi
+                '''
+            }
+        }
 
-                    echo "===== CHECKING MAVEN ====="
+        stage('Check & Install Maven') {
+            steps {
+                sh '''
+                    echo "=== Checking Maven ==="
                     if mvn -version >/dev/null 2>&1; then
                         echo "Maven already installed"
                         mvn -version
                     else
                         echo "Installing Maven..."
-                        apt install -y maven
+                        sudo apt install -y maven
+                        mvn -version
                     fi
+                '''
+            }
+        }
 
-                    echo "===== CHECKING TOMCAT ====="
+        stage('Check & Install Tomcat 10') {
+            steps {
+                sh '''
+                    echo "=== Checking Tomcat ==="
                     if [ -d "/opt/tomcat10" ]; then
-                        echo "Tomcat already installed at /opt/tomcat10"
+                        echo "Tomcat already installed in /opt/tomcat10"
                     else
-                        echo "Tomcat not found, installing Tomcat 10..."
+                        echo "Installing Tomcat 10..."
                         cd /opt
-                        wget https://archive.apache.org/dist/tomcat/tomcat-10/v10.1.30/bin/apache-tomcat-10.1.30.tar.gz
-                        tar -xzf apache-tomcat-10.1.30.tar.gz
-                        mv apache-tomcat-10.1.30 tomcat10
-                        chmod +x /opt/tomcat10/bin/*.sh
+                        sudo wget https://archive.apache.org/dist/tomcat/tomcat-10/v10.1.30/bin/apache-tomcat-10.1.30.tar.gz
+                        sudo tar -xzf apache-tomcat-10.1.30.tar.gz
+                        sudo mv apache-tomcat-10.1.30 tomcat10
+                        sudo chmod +x /opt/tomcat10/bin/*.sh
                     fi
-
-                    EOF
                 '''
             }
         }
@@ -47,31 +57,27 @@ pipeline {
         stage('Build WAR File') {
             steps {
                 sh '''
-                    echo "Running Maven build..."
+                    echo "=== Building WAR ==="
                     mvn clean package -DskipTests
                 '''
             }
         }
 
-        stage('Deploy WAR to Tomcat (as ROOT)') {
+        stage('Deploy WAR to Tomcat') {
             steps {
                 sh '''
-                    sudo -s << 'EOF'
+                    echo "=== Stopping Tomcat ==="
+                    sudo /opt/tomcat10/bin/shutdown.sh || true
 
-                    echo "Stopping Tomcat..."
-                    /opt/tomcat10/bin/shutdown.sh || true
+                    echo "=== Removing old deployment ==="
+                    sudo rm -rf /opt/tomcat10/webapps/news-app
+                    sudo rm -f /opt/tomcat10/webapps/news-app.war
 
-                    echo "Removing old deployment..."
-                    rm -rf /opt/tomcat10/webapps/news-app
-                    rm -f /opt/tomcat10/webapps/news-app.war
+                    echo "=== Deploying new WAR ==="
+                    sudo cp target/news-app.war /opt/tomcat10/webapps/
 
-                    echo "Copying new WAR..."
-                    cp target/news-app.war /opt/tomcat10/webapps/
-
-                    echo "Starting Tomcat..."
-                    /opt/tomcat10/bin/startup.sh
-
-                    EOF
+                    echo "=== Starting Tomcat ==="
+                    sudo /opt/tomcat10/bin/startup.sh
                 '''
             }
         }
