@@ -90,5 +90,3 @@ jobs:
         sleep 60
        echo "Stopping Tomcat"
        sudo /opt/tomcat10/bin/shutdown.sh || true
-
-       
