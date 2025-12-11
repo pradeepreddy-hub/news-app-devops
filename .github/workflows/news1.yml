@@ -43,7 +43,7 @@ jobs:
     - name: Check & Install Tomcat 10
       run: |
         echo "Checking Tomcat installation"
-        if [ -d "/opt/apache-tomcat-10.1.49" ]; then
+        if [ -d "/opt/tomcat10" ]; then
             echo "Tomcat already installed"
         else
             echo "Installing Tomcat 10..."
