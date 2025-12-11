@@ -2,91 +2,104 @@ name: News App CI/CD
 
 on:
   push:
-    branches: [ feature-1 ]
+    branches: [ feature-1 ]   # change to main/develop as needed
   pull_request:
+
+env:
+  TOMCAT_DIR: /opt/tomcat10
+  APP_CONTEXT: news-app
+  APP_URL: http://65.0.170.244:8080/news-app/
+  KEEP_TOMCAT_RUNNING: "true"  # set to "false" to stop tomcat at the end (for ephemeral tests)
 
 jobs:
   build-deploy:
     runs-on: self-hosted
 
     steps:
-    - name: Checkout Source Code
+    - name: Checkout source
       uses: actions/checkout@v4
 
-    - name: Check & Install Java 17
+    - name: Set up Java 17
+      uses: actions/setup-java@v4
+      with:
+        distribution: temurin
+        java-version: '17'
+
+    - name: Cache Maven repository
+      uses: actions/cache@v4
+      with:
+        path: ~/.m2/repository
+        key: ${{ runner.os }}-maven-${{ hashFiles('**/pom.xml') }}
+
+    - name: Build WAR (Maven)
       run: |
-        echo "Checking Java"
-        if java -version >/dev/null 2>&1; then
-            echo "Java already installed"
-            java -version
+        set -euo pipefail
+        mvn -B -V clean package -DskipTests
+
+    - name: Install Tomcat 10 if missing
+      run: |
+        set -euo pipefail
+        if [ -d "${TOMCAT_DIR}" ]; then
+          echo "Tomcat already installed at ${TOMCAT_DIR}"
         else
-            echo "Installing Java 17..."
-            sudo apt update -y
-            sudo apt install -y openjdk-17-jdk
-            java -version
+          echo "Installing Tomcat to ${TOMCAT_DIR}..."
+          sudo mkdir -p /opt
+          sudo bash -c "cd /opt && \
+            wget -q https://archive.apache.org/dist/tomcat/tomcat-10/v10.1.49/bin/apache-tomcat-10.1.49.tar.gz && \
+            tar -xzf apache-tomcat-10.1.49.tar.gz && \
+            mv apache-tomcat-10.1.49 tomcat10 && \
+            rm -f apache-tomcat-10.1.49.tar.gz && \
+            chmod +x /opt/tomcat10/bin/*.sh"
         fi
-
-
-    - name: Check & Install Maven
-      run: |
-        echo "=== Checking Maven ==="
-        if mvn -version >/dev/null 2>&1; then
-            echo "Maven already installed"
-            mvn -version
-        else
-            echo "Installing Maven..."
-            sudo apt install -y maven
-            mvn -version
-        fi
-
-    
-    - name: Check & Install Tomcat 10
-      run: |
-        echo "Checking Tomcat installation"
-        if [ -d "/opt/apache-tomcat-10.1.49" ]; then
-            echo "Tomcat already installed"
-        else
-            echo "Installing Tomcat 10..."
-            cd /opt
-            sudo wget https://archive.apache.org/dist/tomcat/tomcat-10/v10.1.49/bin/apache-tomcat-10.1.49.tar.gz
-            sudo tar -xzf apache-tomcat-10.1.49.tar.gz
-            sudo mv apache-tomcat-10.1.49 /opt/tomcat10
-            sudo chmod +x /opt/tomcat10/bin/*.sh
-        fi
-
-
-    - name: Build WAR File
-      run: |
-  
-        mvn clean package -DskipTests
-
 
     - name: Deploy WAR to Tomcat
       run: |
-       echo "Stopping Tomcat"
-       sudo /opt/tomcat10/bin/shutdown.sh || true
+        set -euo pipefail
+        echo "Stopping Tomcat (if running)..."
+        sudo ${TOMCAT_DIR}/bin/shutdown.sh || true
 
-       echo "Removing old deployment"
-       sudo rm -rf /opt/tomcat10/webapps/news-app
-       sudo rm -f /opt/tomcat10/webapps/news-app.war
+        echo "Removing previous deployment (if any)..."
+        sudo rm -rf ${TOMCAT_DIR}/webapps/${APP_CONTEXT}
+        sudo rm -f ${TOMCAT_DIR}/webapps/${APP_CONTEXT}.war
 
-       echo "Deploying new WAR"
-       sudo cp target/news-app.war /opt/tomcat10/webapps/
+        echo "Copying new WAR..."
+        if [ -f target/${APP_CONTEXT}.war ]; then
+          sudo cp target/${APP_CONTEXT}.war ${TOMCAT_DIR}/webapps/${APP_CONTEXT}.war
+        else
+          echo "ERROR: target/${APP_CONTEXT}.war not found" >&2
+          exit 1
+        fi
 
-       echo "Starting Tomcat"
-       sudo /opt/tomcat10/bin/startup.sh
-       sleep 15
-        
-    - name: Status check
+        echo "Starting Tomcat..."
+        sudo ${TOMCAT_DIR}/bin/startup.sh
+
+        echo "Waiting for application to be available..."
+        # poll for up to 60 seconds
+        for i in $(seq 1 20); do
+          if curl -sSf "${APP_URL}" >/dev/null 2>&1; then
+            echo "App is reachable"
+            break
+          else
+            echo "Waiting... ($i)"
+            sleep 3
+          fi
+        done
+
+        # final check
+        curl -I "${APP_URL}"
+
+    - name: Smoke test content
       run: |
-        curl -I http://65.0.170.244:8080/news-app/ || true
-        
-    - name: Verify app content
+        set -euo pipefail
+        RESPONSE=$(curl -sSf "${APP_URL}")
+        echo "$RESPONSE" | grep -q "Welcome to news App"
+        echo "$RESPONSE" | grep -q "Live News Categories"
+        echo "$RESPONSE" | grep -q "Top Headlines"
+        echo "Smoke test passed."
+
+    - name: Stop Tomcat (optional)
+      if: env.KEEP_TOMCAT_RUNNING == 'false'
       run: |
-       RESPONSE=$(curl -s http://65.0.170.244:8080/news-app/)
-       echo "$RESPONSE" | grep "Welcome to news App" || true
-       echo "$RESPONSE" | grep "Live News Categories" || true
-       echo "$RESPONSE" | grep "Top Headlines" || true
-        sleep 60
-       echo "Stopping Tomcat"
-       sudo /opt/tomcat10/bin/shutdown.sh || true
+        set -euo pipefail
+        echo "Stopping Tomcat (cleanup)..."
+        sudo ${TOMCAT_DIR}/bin/shutdown.sh || true
