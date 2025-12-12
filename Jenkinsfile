@@ -1,94 +1,90 @@
 pipeline {
-    agent any
+    agent { label 'slave2' }
+
+    environment {
+        TOMCAT_PATH = "/opt/tomcat10/webapps"
+        WAR_FILE = "target/news-app.war"
+    }
 
     stages {
-
-        stage('Check & Install Java') {
+        stage('Checkout') {
             steps {
-                sh '''
-                    echo "=== Checking Java ==="
-                    if java -version >/dev/null 2>&1; then
-                        echo "Java already installed"
-                        java -version
-                    else
-                        echo "Installing Java 17..."
-                        sudo apt update -y
-                        sudo apt install -y openjdk-17-jdk
-                        java -version
-                    fi
-                '''
+                git branch: 'feature-2', url: 'https://github.com/pradeepreddy-hub/news-app-devops.git'
             }
         }
 
-        stage('Check & Install Maven') {
+        stage('Build') {
             steps {
-                sh '''
-                    echo "=== Checking Maven ==="
-                    if mvn -version >/dev/null 2>&1; then
-                        echo "Maven already installed"
-                        mvn -version
-                    else
-                        echo "Installing Maven..."
-                        sudo apt install -y maven
-                        mvn -version
-                    fi
-                '''
+                // This runs maven package (will run tests because -DskipTests=false)
+                sh 'mvn clean package -DskipTests=false'
             }
         }
 
-        stage('Check & Install Tomcat 10') {
+        stage('Run Tests') {
             steps {
-                sh '''
-                    echo "=== Checking Tomcat ==="
-                    if [ -d "/opt/tomcat10" ]; then
-                        echo "Tomcat already installed in /opt/tomcat10"
-                    else
-                        echo "Installing Tomcat 10..."
-                        cd /opt
-                        sudo wget https://archive.apache.org/dist/tomcat/tomcat-10/v10.1.30/bin/apache-tomcat-10.1.30.tar.gz
-                        sudo tar -xzf apache-tomcat-10.1.30.tar.gz
-                        sudo mv apache-tomcat-10.1.30 tomcat10
-                        sudo chmod +x /opt/tomcat10/bin/*.sh
-                    fi
-                '''
-            }
-        }
-
-        stage('Build WAR File') {
-            steps {
-                sh '''
-                    echo "=== Building WAR ==="
-                    mvn clean package -DskipTests
-                '''
+                sh 'mvn test'
             }
         }
 
         stage('Deploy WAR to Tomcat') {
             steps {
-                sh '''
-                    echo "=== Stopping Tomcat ==="
-                    sudo /opt/tomcat10/bin/shutdown.sh || true
+                sh(script: '''
+                    echo "Using TOMCAT_PATH=${TOMCAT_PATH}"
+                    echo "WAR_FILE=${WAR_FILE}"
 
-                    echo "=== Removing old deployment ==="
-                    sudo rm -rf /opt/tomcat10/webapps/news-app
-                    sudo rm -f /opt/tomcat10/webapps/news-app.war
+                    if [ ! -f "${WAR_FILE}" ]; then
+                      echo "ERROR: WAR file ${WAR_FILE} not found"
+                      exit 1
+                    fi
 
-                    echo "=== Deploying new WAR ==="
-                    sudo cp target/news-app.war /opt/tomcat10/webapps/
+                    echo "Cleaning old deployment..."
+                    sudo rm -rf "${TOMCAT_PATH}/news-app" "${TOMCAT_PATH}/news-app.war" || true
 
-                    echo "=== Starting Tomcat ==="
-                    sudo /opt/tomcat10/bin/startup.sh
-                '''
+                    echo "Copying new WAR..."
+                    sudo cp "${WAR_FILE}" "${TOMCAT_PATH}/"
+
+                    echo "Restarting Tomcat..."
+                    # kill existing Tomcat process if running
+                    pkill -f 'org.apache.catalina.startup.Bootstrap' || true
+
+                    # start Tomcat (assumes ../bin/startup.sh is the startup script)
+                    nohup "${TOMCAT_PATH}/../bin/startup.sh" > /dev/null 2>&1 &
+                ''')
             }
         }
-    }
+
+        stage('Push the artifacts into JFrog Artifactory') {
+            steps {
+                script {
+                    // Get the current date and time in the format: yyyy-MM-dd_HH-mm
+                    def currentDate = new java.text.SimpleDateFormat("yyyy-MM-dd_HH-mm").format(new Date())
+
+                    // Define the target path with the timestamp
+                    def targetPath = "pradeep.devops.releases/${currentDate}/"
+
+                    // Upload the built WAR to JFrog Artifactory with the timestamped path
+                    rtUpload(
+                        serverId: "jfrog",
+                        spec: """{
+                            "files": [
+                                {
+                                    "pattern": "${WAR_FILE}",
+                                    "target": "${targetPath}"
+                                }
+                            ]
+                        }"""
+                    )
+                }
+            }
+        }
+    } // end stages
 
     post {
         success {
-            echo "Deployment completed successfully!"
+            echo 'Build and deployment completed successfully!'
         }
         failure {
-            echo "Deployment failed!"
+            echo 'Build or deployment failed. Check logs for details.'
         }
     }
 }
