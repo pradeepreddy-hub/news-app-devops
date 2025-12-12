@@ -87,6 +87,6 @@ jobs:
        echo "$RESPONSE" | grep "Welcome to news App" || true
        echo "$RESPONSE" | grep "Live News Categories" || true
        echo "$RESPONSE" | grep "Top Headlines" || true
-        sleep 60
+        sleep 120
        echo "Stopping Tomcat"
        sudo /opt/tomcat10/bin/shutdown.sh || true
